@@ -76,3 +76,53 @@ def fetch_analytics(start_date: str | None = None, end_date: str | None = None) 
     results["_errors"] = errors
     results["_meta"] = {"start_date": start, "end_date": end}
     return results
+
+
+def fetch_users(
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 100,
+    max_pages: int = 5,
+) -> dict:
+    """Fetch per-user metrics from the /users endpoint.
+
+    Walks cursor-based pagination up to `max_pages` to gather enough
+    rows for a leaderboard. Returns {'data': [...], 'meta': {...},
+    '_error': str | None}.
+    """
+    end = end_date or _yesterday_utc()
+    start = start_date or _default_start(end)
+
+    aggregated: list[dict] = []
+    cursor: str | None = None
+    last_meta: dict = {}
+    error: str | None = None
+
+    for _ in range(max_pages):
+        params: dict = {"startDate": start, "endDate": end, "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            page = _fetch("users", params)
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response else 0
+            detail = ""
+            try:
+                detail = exc.response.json().get("detail", "")
+            except Exception:
+                detail = exc.response.text[:200] if exc.response else ""
+            error = f"{status}: {detail}"
+            break
+        except Exception as exc:
+            error = str(exc)
+            break
+
+        aggregated.extend(page.get("data", []))
+        last_meta = page.get("meta", {}) or {}
+        if not last_meta.get("has_more"):
+            break
+        cursor = last_meta.get("next_cursor")
+        if not cursor:
+            break
+
+    return {"data": aggregated, "meta": last_meta, "_error": error}

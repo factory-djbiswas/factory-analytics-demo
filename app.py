@@ -17,7 +17,7 @@ from charts import (
     output_amplification_chart,
     top_languages_chart,
 )
-from factory_client import fetch_analytics
+from factory_client import fetch_analytics, fetch_users
 from metrics import (
     avg_autonomy_ratio,
     autonomy_trend_pct,
@@ -25,11 +25,13 @@ from metrics import (
     build_productivity_df,
     build_tools_df,
     build_tokens_df,
+    build_users_df,
     client_dau_breakdown,
     delegation_distribution,
     files_per_dau,
     hands_off_share,
     peak_dau,
+    power_user_leaderboard,
     pr_velocity_change,
     top_languages,
     total_commits,
@@ -197,6 +199,92 @@ if not tools_df.empty:
             st.metric("Hands-Off Share", f"{hands_off:.1f}%", help="Auto-high + Auto-medium delegation levels")
 else:
     st.info("No tools/autonomy data for this range.")
+
+st.divider()
+
+# ── Power User Leaderboard ──────────────────────────────────────────────────
+st.subheader("🏆 Power User Leaderboard")
+st.caption(
+    "Top 10 users ranked by tool calls across the selected range. "
+    "Per-user PR counts aren't exposed by the Analytics API, so tool calls "
+    "serve as the closest output proxy. Autonomy and delegation are surfaced "
+    "alongside to identify true power users."
+)
+
+with st.spinner("Fetching per-user metrics..."):
+    users_raw = fetch_users(start_date=start_str, end_date=end_str, limit=100)
+
+if users_raw.get("_error"):
+    st.warning(f"Could not load /users data: {users_raw['_error']}")
+else:
+    users_df = build_users_df(users_raw)
+    leaderboard = power_user_leaderboard(users_df, n=10)
+
+    if leaderboard.empty:
+        st.info("No per-user activity in this range.")
+    else:
+        display_cols = {
+            "rank": st.column_config.NumberColumn("Rank", width="small"),
+        }
+        label_col = "user_email" if "user_email" in leaderboard.columns else "user_id"
+        display_cols[label_col] = st.column_config.TextColumn("User")
+        if "tool_calls" in leaderboard.columns:
+            display_cols["tool_calls"] = st.column_config.NumberColumn(
+                "Tool Calls", format="%d"
+            )
+        if "billable_tokens" in leaderboard.columns:
+            display_cols["billable_tokens"] = st.column_config.NumberColumn(
+                "Credits (FSC)", format="%d"
+            )
+        if "sessions" in leaderboard.columns:
+            display_cols["sessions"] = st.column_config.NumberColumn(
+                "Sessions", format="%d"
+            )
+        if "autonomy_ratio" in leaderboard.columns:
+            display_cols["autonomy_ratio"] = st.column_config.NumberColumn(
+                "Autonomy Ratio", format="%.2f"
+            )
+        if "delegation_level" in leaderboard.columns:
+            display_cols["delegation_level"] = st.column_config.TextColumn(
+                "Delegation"
+            )
+        if "primary_model" in leaderboard.columns:
+            display_cols["primary_model"] = st.column_config.TextColumn(
+                "Primary Model"
+            )
+        if "languages" in leaderboard.columns:
+            display_cols["languages"] = st.column_config.TextColumn("Top Languages")
+
+        ordered = [c for c in [
+            "rank",
+            label_col,
+            "tool_calls",
+            "billable_tokens",
+            "sessions",
+            "autonomy_ratio",
+            "delegation_level",
+            "primary_model",
+            "languages",
+        ] if c in leaderboard.columns]
+
+        st.dataframe(
+            leaderboard[ordered],
+            column_config=display_cols,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        if "autonomy_ratio" in leaderboard.columns and "tool_calls" in leaderboard.columns:
+            top = leaderboard.iloc[0]
+            st.caption(
+                f"**#1 {top[label_col]}** drove {int(top['tool_calls']):,} tool calls "
+                f"with autonomy ratio {top['autonomy_ratio']:.2f}"
+                + (
+                    f" at `{top['delegation_level']}` delegation."
+                    if "delegation_level" in leaderboard.columns and top.get("delegation_level")
+                    else "."
+                )
+            )
 
 st.divider()
 
