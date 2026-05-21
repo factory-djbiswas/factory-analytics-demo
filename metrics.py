@@ -144,3 +144,116 @@ def client_dau_breakdown(activity_df: pd.DataFrame) -> pd.DataFrame:
             for client, count in clients.items():
                 records.append({"date": row["date"], "client": client, "dau": count})
     return pd.DataFrame(records)
+
+
+def build_users_df(raw: dict) -> pd.DataFrame:
+    return _safe_df(raw.get("data", []))
+
+
+def _mode_or_first(series: pd.Series) -> Any:
+    cleaned = series.dropna()
+    if cleaned.empty:
+        return None
+    mode = cleaned.mode()
+    return mode.iloc[0] if not mode.empty else cleaned.iloc[0]
+
+
+def _flatten_languages(values: pd.Series) -> str:
+    seen: dict[str, int] = {}
+    for entry in values.dropna():
+        if isinstance(entry, list):
+            for item in entry:
+                if isinstance(item, dict):
+                    name = item.get("language") or item.get("name")
+                    count = item.get("count", 1)
+                elif isinstance(item, str):
+                    name = item
+                    count = 1
+                else:
+                    continue
+                if not name:
+                    continue
+                seen[name] = seen.get(name, 0) + int(count or 0)
+    if not seen:
+        return ""
+    ordered = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)
+    return ", ".join(name for name, _ in ordered[:3])
+
+
+def power_user_leaderboard(users_df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
+    """Aggregate per-user-per-day rows into a leaderboard sorted by tool_calls.
+
+    Per-user PR counts are not exposed by the Analytics API, so we rank by
+    tool_calls (the closest per-user output proxy) and surface autonomy and
+    delegation alongside it.
+    """
+    if users_df.empty or "user_id" not in users_df.columns:
+        return pd.DataFrame()
+
+    df = users_df.copy()
+    numeric_cols = [
+        "tool_calls",
+        "billable_tokens",
+        "sessions",
+        "messages",
+        "user_messages",
+        "assistant_messages",
+        "autonomy_ratio",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    label_col = "user_email" if "user_email" in df.columns else "user_id"
+    df[label_col] = df[label_col].fillna(df["user_id"])
+
+    sum_cols = [
+        c
+        for c in [
+            "tool_calls",
+            "billable_tokens",
+            "sessions",
+            "messages",
+            "user_messages",
+            "assistant_messages",
+        ]
+        if c in df.columns
+    ]
+
+    agg_map: dict[str, Any] = {c: "sum" for c in sum_cols}
+    if "autonomy_ratio" in df.columns:
+        agg_map["autonomy_ratio"] = "mean"
+    if "delegation_level" in df.columns:
+        agg_map["delegation_level"] = _mode_or_first
+    if "primary_model" in df.columns:
+        agg_map["primary_model"] = _mode_or_first
+    if "languages" in df.columns:
+        agg_map["languages"] = _flatten_languages
+
+    grouped = (
+        df.groupby(["user_id", label_col], dropna=False)
+        .agg(agg_map)
+        .reset_index()
+    )
+
+    if "tool_calls" in grouped.columns:
+        grouped = grouped.sort_values("tool_calls", ascending=False)
+
+    grouped = grouped.head(n).reset_index(drop=True)
+    grouped.insert(0, "rank", range(1, len(grouped) + 1))
+
+    if "autonomy_ratio" in grouped.columns:
+        grouped["autonomy_ratio"] = grouped["autonomy_ratio"].round(2)
+    int_cols = [
+        "billable_tokens",
+        "tool_calls",
+        "sessions",
+        "messages",
+        "user_messages",
+        "assistant_messages",
+    ]
+    for col in int_cols:
+        if col in grouped.columns:
+            grouped[col] = grouped[col].astype("Int64")
+
+    return grouped
