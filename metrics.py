@@ -86,6 +86,15 @@ def files_per_dau(activity_df: pd.DataFrame, productivity_df: pd.DataFrame) -> p
     return merged
 
 
+def _num(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def hands_off_share(tools_df: pd.DataFrame) -> float:
     if tools_df.empty or "tool_autonomy_level_ratio" not in tools_df.columns:
         return 0.0
@@ -93,7 +102,7 @@ def hands_off_share(tools_df: pd.DataFrame) -> float:
     count = 0
     for row in tools_df["tool_autonomy_level_ratio"]:
         if isinstance(row, dict):
-            auto = row.get("auto_high", 0) + row.get("auto_medium", 0)
+            auto = _num(row.get("auto_high")) + _num(row.get("auto_medium"))
             total += auto
             count += 1
     if count == 0:
@@ -110,7 +119,7 @@ def delegation_distribution(tools_df: pd.DataFrame) -> dict[str, float]:
     for row in tools_df["tool_autonomy_level_ratio"]:
         if isinstance(row, dict):
             for k in keys:
-                totals[k] += row.get(k, 0)
+                totals[k] += _num(row.get(k))
             count += 1
     if count == 0:
         return {}
